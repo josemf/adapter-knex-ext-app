@@ -31,7 +31,13 @@ class ListModificationBuilder {
 
         return fieldAdapters.map(field => {
 
-            const options = this._buildOptions([ "isPrimaryKey", "isRequired", "defaultValue", ], field.field);            
+            const options = this._buildOptions([
+                "isPrimaryKey",
+                "isRequired",
+                "defaultValue",
+                "refListKey",
+                "refListPath"
+            ], field.field);            
             
             return {
                 type: field.fieldName,
@@ -55,6 +61,98 @@ class ListModificationBuilder {
     }
 }
 
+class ListModificationExecution {
+    constructor(listAdapters, knex) {
+        this._knex = knex;
+        this._schema = knex.schema;
+        this._listAdapters = listAdapters;
+    }
+
+    async apply(modifications) {
+
+        const orderedModifications = this._sortModifications(modifications);
+        
+        for(const modification of orderedModifications) {
+            await this._applyIf({ object: "list", op: "create" }, modification, () => this._createTable(modification));
+        };        
+    }
+
+    _sortModifications(modifications) {
+        // This will sort modifications so create tables go first, remove tables second, fields add or remove third and foreign keys or indexes last
+        return modifications.sort((m1, m2) => {
+
+            const objects = [ "list", "field", "reference" ];
+            const ops = [ "create", "remove", "update", "rename"];
+
+            if(objects[m1.object] < objects[m2.object]) {
+                return -1;
+            }
+
+            if(objects[m1.object] > objects[m2.object]) {
+                return 1;
+            }
+
+            if(ops[m1.op] < ops[m2.op]) {
+                return -1;
+            }
+
+            if(ops[m1.op] > ops[m2.op]) {
+                return 1;
+            }
+
+            return 0;
+        });
+    }
+    
+    async _applyIf({ object, op }, modification, callback) {
+        if(modification.object === object && modification.op === op) {
+            return await callback();
+        }
+
+        return Promise.resolve();
+    }
+    
+    async _createTable(modification) {
+        
+        const tableName = modification.options.tableName || modification.name;
+        
+        if(await this._schema.hasTable(tableName)) {            
+            await this._dropTable(modification);
+        }            
+        
+        await this._schema.createTable(tableName, (t) => {
+            
+            modification.fields.forEach(field => {
+
+                if(field.type === "Relationship") {
+
+                    // Foreign key references are implemented using
+                    // modifications, later on
+                    // TODO: This could use a better implementation then Knex btw
+                    
+                    t.integer(field.name);
+                    
+                } else {
+                    this._listAdapterFieldAddToTableSchema(modification.name, field, t);
+                }
+            });
+            
+        });
+    }
+
+    async _dropTable(modification) {
+        
+        const tableName = modification.options.tableName || modification.name;        
+        
+        await this._schema.dropTableIfExists(tableName);
+    }
+
+    _listAdapterFieldAddToTableSchema(listName, field, t) {
+        const fieldAdapter = this._listAdapters[listName].fieldAdaptersByPath[field.name];        
+        fieldAdapter.addToTableSchema(t);
+    }
+}
+
 class KnexAdapterExtended extends KnexAdapter {
 
     constructor({ knexOptions = {}, schemaName = 'public' } = {}) {
@@ -72,35 +170,11 @@ class KnexAdapterExtended extends KnexAdapter {
             console.log(`Needs modifications file in place ${MODIFICATIONS_FILE_PATH}`);            
             return;
         }
-
-        const schema = this.knex.schema;
         
-        const modifications = JSON.parse(fs.readFileSync(MODIFICATIONS_FILE_PATH, "utf-8"));
-        
-        for(const modification of modifications) {
-                  
-            if(modification.object === "list" && modification.op === "create") {
-                // DROP if exists?
+        const modifications = JSON.parse(fs.readFileSync(MODIFICATIONS_FILE_PATH, "utf-8"));        
+        const execution = new ListModificationExecution(this.listAdapters, this.knex);
 
-                const tableName = modification.options.tableName || modification.name;
-                
-                if(await schema.hasTable(tableName)) {
-                    await schema.dropTableIfExists(tableName);
-                }
-
-                await schema.createTable(tableName, function(t) {                    
-                    modification.fields.forEach(field => {
-                        if(field.type === "AutoIncrementImplementation") {
-                            t.increments(field.name).primary();
-                        } else {
-                            t.text(field.name);
-                        }
-                    });
-
-                });    
-            }
-        };
-
+        await execution.apply(modifications);
     }
 }
  
