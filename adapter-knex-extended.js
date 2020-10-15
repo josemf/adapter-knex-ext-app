@@ -6,14 +6,21 @@ const MODIFICATIONS_FILE_PATH = './compiled/modifications.json';
 
 class ListModificationBuilder {
 
-    constructor(listAdapter) {
-        this._listAdapter = listAdapter;
+    constructor(listAdapters) {
+        this._listAdapters = listAdapters;
+
+        this._modificationsList = [];
     }
 
     build() {
-        return this._createList(this._listAdapter.key,
-                                Object.assign({}, { tableName: this._listAdapter.tableName }, this._listAdapter.config),
-                                this._buildFields(this._listAdapter.fieldAdapters));        
+
+        Object.values(this._listAdapters).map(listAdapter => {
+            this._createList(listAdapter.key,
+                             Object.assign({}, { tableName: listAdapter.tableName }, listAdapter.config),
+                             this._buildFields(listAdapter.fieldAdapters));        
+        });
+        
+        return this._modificationsList;
     }
 
     _buildOptions(keys, object) {
@@ -48,16 +55,35 @@ class ListModificationBuilder {
     }
     
     _createList(name, options, fields) {
-        return this._modification("list", "create", name, { options, fields });
+        this._modification("list", "create", name, { options, fields });
+
+        fields
+            .filter(field => field.type === "Relationship")
+            .forEach(field => {
+                const associationName = `${name}-${field.name}-${field.options.refListKey}-${field.options.refListPath || "id"}`;
+                
+                this._modification("association", "create", associationName, {
+                    from: {
+                        list: name,
+                        field: field.name,
+                        cardinality: "one"
+                    },
+                    
+                    to: {
+                        list: field.options.refListKey,
+                        field: field.options.refListPath || "id"
+                    }
+                });
+            });
     }
 
     _modification(object, op, name, extra = {}) {
-        return {
+        this._modificationsList.push({
             object,
             op,
             name,
             ... extra
-        };
+        });
     }
 }
 
@@ -74,6 +100,7 @@ class ListModificationExecution {
         
         for(const modification of orderedModifications) {
             await this._applyIf({ object: "list", op: "create" }, modification, () => this._createTable(modification));
+            await this._applyIf({ object: "association", op: "create" }, modification, () => this._createAssociation(modification));            
         };        
     }
 
@@ -81,22 +108,22 @@ class ListModificationExecution {
         // This will sort modifications so create tables go first, remove tables second, fields add or remove third and foreign keys or indexes last
         return modifications.sort((m1, m2) => {
 
-            const objects = [ "list", "field", "reference" ];
+            const objects = [ "list", "field", "association" ];
             const ops = [ "create", "remove", "update", "rename"];
-
-            if(objects[m1.object] < objects[m2.object]) {
+            
+            if(objects.indexOf(m1.object) < objects.indexOf(m2.object)) {
                 return -1;
             }
 
-            if(objects[m1.object] > objects[m2.object]) {
+            if(objects.indexOf(m1.object) > objects.indexOf(m2.object)) {
                 return 1;
             }
 
-            if(ops[m1.op] < ops[m2.op]) {
+            if(ops.indexOf(m1.op) < ops.indexOf(m2.op)) {
                 return -1;
             }
 
-            if(ops[m1.op] > ops[m2.op]) {
+            if(ops.indexOf(m1.op) > ops.indexOf(m2.op)) {
                 return 1;
             }
 
@@ -123,22 +150,35 @@ class ListModificationExecution {
         await this._schema.createTable(tableName, (t) => {
             
             modification.fields.forEach(field => {
-
                 if(field.type === "Relationship") {
 
                     // Foreign key references are implemented using
                     // modifications, later on
                     // TODO: This could use a better implementation then Knex btw
                     
-                    t.integer(field.name);
-                    
+                    t.integer(field.name);                    
                 } else {
                     this._listAdapterFieldAddToTableSchema(modification.name, field, t);
                 }
+            });            
+        });        
+    }
+
+    async _createAssociation(modification) {
+
+        if(modification.from.cardinality === "one") {
+
+            // TODO: put tableName
+            await this._schema.table(modification.from.list, (t) => {
+                t.foreign(modification.from.field)
+                    .references(modification.to.field, modification.name)
+                    .inTable(modification.to.list);
             });
             
-        });
-    }
+            console.log(modification);    
+        }
+        
+    }    
 
     async _dropTable(modification) {
         
@@ -159,8 +199,11 @@ class KnexAdapterExtended extends KnexAdapter {
         super({ knexOptions, schemaName });
     }
     
-    async createModifications() {        
-        const modifications = Object.values(this.listAdapters).reduce((a, listAdapter) => a.concat((new ListModificationBuilder(listAdapter)).build()), []);
+    async createModifications() {
+
+        const builder = new ListModificationBuilder(this.listAdapters);       
+        const modifications = builder.build();
+        
         fs.writeFileSync(MODIFICATIONS_FILE_PATH, JSON.stringify(modifications));
     }
 
