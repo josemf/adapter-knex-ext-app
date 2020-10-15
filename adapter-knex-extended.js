@@ -188,7 +188,10 @@ class ListModificationExecution {
     }
 
     _listAdapterFieldAddToTableSchema(listName, field, t) {
-        const fieldAdapter = this._listAdapters[listName].fieldAdaptersByPath[field.name];        
+        const fieldAdapter = this._listAdapters[listName].fieldAdaptersByPath[field.name];
+
+        console.log(fieldAdapter.implementation);
+        
         fieldAdapter.addToTableSchema(t);
     }
 }
