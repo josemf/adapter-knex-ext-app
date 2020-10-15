@@ -1,5 +1,5 @@
 const { Keystone } = require('@keystonejs/keystone');
-const { Text, Relationship } = require('@keystonejs/fields');
+const { Text, Relationship, Select, Decimal } = require('@keystonejs/fields');
 const { GraphQLApp } = require('@keystonejs/app-graphql');
 const { AdminUIApp } = require('@keystonejs/app-admin-ui');
 const { StaticApp } = require('@keystonejs/app-static');
@@ -17,7 +17,8 @@ keystone.createList('Todo', {
     schemaDoc: 'A list of things which need to be done',
     fields: {
         name: { type: Text, schemaDoc: 'This is the thing you need to do' },
-        createdBy: { type: Relationship, ref: 'User' }
+        workflow: { type: Select, dataType: "enum", options: [ "Home", "Work", "Leasure" ] },
+        createdBy: { type: Relationship, ref: 'User.todo', many: true }
     },
 });
 
@@ -26,7 +27,9 @@ keystone.createList('User', {
     fields: {
         firstName: { type: Text, schemaDoc: 'The user first name' },
         lastName: { type: Text, schemaDoc: 'The user last name' },
-        email: { type: Text, schemaDoc: 'The user email address'}
+        email: { type: Text, schemaDoc: 'The user email address'},
+        weight: { type: Decimal, knexOptions: { precision: 5, scale: 2 }},
+        todo: { type: Relationship, ref: 'Todo.createdBy', many: true }
     },
 });
 

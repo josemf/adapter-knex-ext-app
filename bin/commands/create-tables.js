@@ -6,10 +6,6 @@ const { asyncForEach } = require('@keystonejs/utils');
 
 const createTables = async (args, entryFile, spinner) => {
 
-
-    console.log("Hey")
-
-    return;
   // Allow the spinner time to flush its output to the console.
   await new Promise(resolve => setTimeout(resolve, 100));
   const { keystone } = require(path.resolve(entryFile));
