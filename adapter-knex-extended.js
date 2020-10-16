@@ -1,31 +1,128 @@
 const { KnexAdapter } = require('@keystonejs/adapter-knex');
 
 const fs = require('fs');
+const { detailedDiff } = require("deep-object-diff");
 
 const MODIFICATIONS_FILE_PATH = './compiled/modifications.json';
+const MODIFICATIONS_SCHEMA_FILE_PATH = './compiled/schema.json';
+const DEFAULT_CACHE_SCHEMA_TABLE_NAME = "InternalSchema";
 
 class ListModificationBuilder {
-
-    constructor(listAdapters) {
+    
+    constructor(listAdapters, knex) {
         this._listAdapters = listAdapters;
 
         this._modificationsList = [];
+        this._knex = knex;
+
+        // Keeps the current working copy of the schema
+        // This is what we want to represent in the database
+        this._schemaCurrent = new Map();
+
+        // Keeps the cached version of the schema. We will
+        // have to fetch this from the DB and represents the
+        // schema we have currently mapped in the DB
+        this._schemaCached = new Map();
     }
 
-    build() {
+    async build() {
+        
+        this._buildCurrentSchema();
+        await this._loadCachedSchema();
 
-        Object.values(this._listAdapters).map(listAdapter => {
-            this._createList(listAdapter.key,
-                             Object.assign({}, { tableName: listAdapter.tableName },
-                                           listAdapter.config),
-                             this._buildFields(listAdapter.fieldAdapters));
+        this._schemaCurrent.forEach((listSchema, listName) => {
 
-            this._createAssociations(listAdapter, listAdapter.fieldAdapters.filter(f => f.fieldName === "Relationship"));
+            const listAdapter = this._listAdapters[listSchema.list];            
+            const cachedSchema = this._schemaCached.get(listName);
+
+            if(!cachedSchema) {
+
+                // The doesn't exists as a table in the database
+                // NOTE: It might be renamed--we should think of a clever way to take care of this
+                
+                this._createList(listSchema.list, listSchema.options, listSchema.fields);
+                this._createAssociations(listAdapter, listAdapter.fieldAdapters.filter(f => f.fieldName === "Relationship"));                
+            } else {
+
+                // The list exists and we should compare all options, fields and associations
+
+                const diff = detailedDiff(cachedSchema, listSchema);
+
+                if(Object.keys(diff.added).length > 0 && Object.keys(diff.added.fields).length > 0) {
+                    
+                    Object.keys(diff.added.fields).forEach(fieldIndex => {
+
+                        const fieldSchema = diff.added.fields[fieldIndex];
+                        const fieldThatComesBefore = listSchema.fields[Number(fieldIndex) - 1];
+
+                        if(fieldSchema.type === "Relationship") {
+                            // If the field is a Relationship we should create a Association instead
+                            
+                            this._createAssociations(listAdapter, [ listAdapter.fieldAdaptersByPath[fieldSchema.name] ]);                                            
+                        } else {
+                            this._createField(fieldSchema.name, listSchema.list, { after: fieldThatComesBefore && fieldThatComesBefore.name || false }, fieldSchema);
+                        }
+                    });
+                }
+            }            
         });
-
-        return this._modificationsList;
+        
+        return {
+            modifications: this._modificationsList,
+            schema: Array.from(this._schemaCurrent.values())
+        };
     }
 
+    _buildCurrentSchema() {
+
+        Object.values(this._listAdapters).forEach(listAdapter => {
+
+            const listSchema = this._buildList(listAdapter.key,
+                                               Object.assign({}, { tableName: listAdapter.tableName }, listAdapter.config),
+                                               this._buildFields(listAdapter.fieldAdapters));
+            
+            this._schemaCurrent.set(listAdapter.key, listSchema);
+        });        
+    }
+
+    _buildList(name, options, fields) {
+        return {
+            list: name,
+            options: options,
+            fields: fields
+        };
+    }
+
+    async _loadCachedSchema()  {
+
+        if(!this._listAdapters[DEFAULT_CACHE_SCHEMA_TABLE_NAME]) {
+            throw Error(`This is not implemented. For the time being make sure to add this list to your app configuration:
+
+keystone.createList('InternalSchema', {
+    schemaDoc: 'It keeps track of list schemas mapped to database, so we know how to compare database schemas without using introspection',
+    fields: {
+        content: { type: Text, schemaDoc: 'The schema contant as a JSON string' },
+        createdAt: { type: DateTime, schemaDoc: 'The data time moment the schema have been applied to the database structure' }
+    },
+});
+`);            
+        }
+        
+        if(!await this._knex.schema.hasTable(DEFAULT_CACHE_SCHEMA_TABLE_NAME)) {                        
+            return;
+        }
+
+        const cachedSchemaResponse = await this._knex(DEFAULT_CACHE_SCHEMA_TABLE_NAME).select("content").limit(1).orderBy("createdAt", "asc");
+
+        if(cachedSchemaResponse.length === 0) {
+            return;
+        }
+
+        const cachedSchemaLists = JSON.parse(cachedSchemaResponse[0].content);
+
+        cachedSchemaLists.forEach(list => this._schemaCached.set(list.list, list));
+    }
+    
     _buildOptions(keys, object) {
         return keys.reduce((options, key) => {
 
@@ -55,8 +152,6 @@ class ListModificationBuilder {
                         "isUnique",
                         "isIndexed",
                         "defaultValue",
-//                        "refListKey",
-//                        "refFieldPath",
                         "dataType",
                         "options",
                     ], fieldAdapter.field),
@@ -80,6 +175,10 @@ class ListModificationBuilder {
         this._modification("list", "create", name, { options, fields });
     }
 
+    _createField(name, list, options, field) {
+        this._modification("field", "create", name, { list, options, field });
+    }
+    
     _createAssociations(listAdapter, fieldAdapters) {
 
         fieldAdapters
@@ -111,12 +210,11 @@ class ListModificationBuilder {
 class ListModificationExecution {
     constructor(listAdapters, knex) {
         this._knex = knex;
-        this._schema = knex.schema;
         this._listAdapters = listAdapters;
 
     }
 
-    async apply(modifications) {
+    async apply(modifications, schema) {
 
         // Keeps track of relationships modifications when both side
         // of the associations depend on the "other" modification data       
@@ -127,6 +225,8 @@ class ListModificationExecution {
             await this._applyIf({ object: "list", op: "create" }, modification, () => this._createTable(modification));
             await this._applyIf({ object: "association", op: "create" }, modification, () => this._createAssociation(modification, referencedAssociationsState));
         };
+
+        await this._saveFreshDatabaseSchema(schema);        
     }
 
     _buildReferencedAssociationsState(modifications) {
@@ -180,24 +280,38 @@ class ListModificationExecution {
         return Promise.resolve();
     }
 
+    async _saveFreshDatabaseSchema(schema) {
+        await this._knex
+            .insert({ content: schema, createdAt: new Date() })
+            .into(DEFAULT_CACHE_SCHEMA_TABLE_NAME);
+    }
+    
     async _createTable(modification) {
 
         const tableName = modification.options.tableName || modification.name;
 
-        if(await this._schema.hasTable(tableName)) {
+        if(await this._knex.schema.hasTable(tableName)) {
+
+            console.log(`* ${tableName} table already exists in the database. Droping.`);
+            
             await this._dropTable(modification);
         }
 
-        await this._schema.createTable(tableName, (t) => {
-
+        console.log(`* Creating table ${tableName}`);
+        
+        await this._knex.schema.createTable(tableName, (t) => {
+            
             modification.fields.forEach(field => {
                 this._listAdapterFieldAddToTableSchema(modification.name, field, t, modification);
             });
         });
+
     }
 
     async _createAssociation(modification, referencedAssociationsState) {
-        
+
+        console.log(`* Creating association refering table ${modification.name} and field ${modification.field} refering to table ${modification.target.list}`);
+
         if(!modification.target.referenced) {
             // Standalone reference
 
@@ -205,7 +319,7 @@ class ListModificationExecution {
 
                 // Foreign key field goes to the list that declares a relationship
                 
-                await this._schema.table(modification.name, (t) => {
+                await this._knex.schema.table(modification.name, (t) => {
                     t.integer(modification.field).unsigned();
                     // TODO: This might be required, or unique or whatever
                     t.index(modification.field);
@@ -224,7 +338,7 @@ class ListModificationExecution {
 
                 const pivotTableName = `${modification.name}_${modification.field}_many`;
                 
-                await this._schema.createTable(pivotTableName, (t) => {
+                await this._knex.schema.createTable(pivotTableName, (t) => {
 
                     const leftFieldName = `${modification.name}_left_id`;                    
                     t.integer(leftFieldName);
@@ -255,7 +369,7 @@ class ListModificationExecution {
             if(modification.cardinality === "1:1" || modification.cardinality === "N:1") {
                 // Foreign key field goes to the list that declares a relationship
                                 
-                await this._schema.table(modification.name, (t) => {
+                await this._knex.schema.table(modification.name, (t) => {
                     t.integer(modification.field).unsigned();
                     t.index(modification.field);
                     t.foreign(modification.field)
@@ -269,7 +383,7 @@ class ListModificationExecution {
             if(modification.cardinality === "1:N") {
                 // Foreign key goes to target list
 
-                await this._schema.table(modification.target.list, (t) => {
+                await this._knex.schema.table(modification.target.list, (t) => {
                     t.integer(referencedModification.modification.field).unsigned();
                     t.index(referencedModification.modification.field);
                     t.foreign(referencedModification.modification.field)
@@ -285,7 +399,7 @@ class ListModificationExecution {
 
                 const pivotTableName = `${modification.name}_${modification.field}_${referencedModification.modification.name}_${referencedModification.modification.field}`;
                 
-                await this._schema.createTable(pivotTableName, (t) => {
+                await this._knex.schema.createTable(pivotTableName, (t) => {
 
                     const leftFieldName = `${modification.name}_left_id`;                    
                     t.integer(leftFieldName);
@@ -311,7 +425,7 @@ class ListModificationExecution {
 
         const tableName = modification.options.tableName || modification.name;
 
-        await this._schema.dropTableIfExists(tableName);
+        await this._knex.schema.dropTableIfExists(tableName);
     }
 
     _listAdapterFieldAddToTableSchema(listName, field, t, m) {
@@ -323,7 +437,7 @@ class ListModificationExecution {
 
         const fieldAdapter = this._listAdapters[listName].fieldAdaptersByPath[field.name];
         fieldAdapter.addToTableSchema(t);
-    }
+    } 
 }
 
 class KnexAdapterExtended extends KnexAdapter {
@@ -334,10 +448,11 @@ class KnexAdapterExtended extends KnexAdapter {
 
     async createModifications() {
 
-        const builder = new ListModificationBuilder(this.listAdapters);
-        const modifications = builder.build();
-
+        const builder = new ListModificationBuilder(this.listAdapters, this.knex);
+        const { modifications, schema } = await builder.build();
+        
         fs.writeFileSync(MODIFICATIONS_FILE_PATH, JSON.stringify(modifications));
+        fs.writeFileSync(MODIFICATIONS_SCHEMA_FILE_PATH, JSON.stringify(schema));        
     }
 
     async doModifications() {
@@ -347,10 +462,16 @@ class KnexAdapterExtended extends KnexAdapter {
             return;
         }
 
-        const modifications = JSON.parse(fs.readFileSync(MODIFICATIONS_FILE_PATH, "utf-8"));
-        const execution = new ListModificationExecution(this.listAdapters, this.knex);
+        if(!fs.existsSync(MODIFICATIONS_SCHEMA_FILE_PATH)) {
+            console.log(`Needs modifications schema file in place ${MODIFICATIONS_SCHEMA_FILE_PATH}`);
+            return;
+        }        
 
-        await execution.apply(modifications);
+        const modifications = JSON.parse(fs.readFileSync(MODIFICATIONS_FILE_PATH, "utf-8"));
+        const schema = fs.readFileSync(MODIFICATIONS_SCHEMA_FILE_PATH, "utf-8");
+        
+        const execution = new ListModificationExecution(this.listAdapters, this.knex);
+        await execution.apply(modifications, schema);
     }
 }
 
