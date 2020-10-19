@@ -34,11 +34,11 @@ keystone.createList('User', {
     schemaDoc: 'The user that keeps the todo in check',
     fields: {
         firstName: { type: Text, schemaDoc: 'The user first name' },
-        lastName: { type: Text, schemaDoc: 'The user last name' },
+        
         phoneNumber: { type: Text, schemaDoc: 'The user phoneNumber'},
+        lastName: { type: Text, schemaDoc: 'The user last name' },
         
         weight: { type: Decimal, knexOptions: { precision: 5, scale: 2 }},
-        height: { type: Decimal, knexOptions: { precision: 5, scale: 2 }},
         todo: { type: Relationship, ref: 'Todo.createdBy', many: true }
     },
 });
