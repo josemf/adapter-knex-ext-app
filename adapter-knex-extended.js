@@ -80,8 +80,6 @@ class ListModificationBuilder {
           c) There is a next field in sourceList but no field to iterate in targetList - it is a removed field
           d) There is no next field in sourceList but some more fields in targetList - those are added
         */
-
-        console.log("#######################################################################################################")
         
         const doneFieldNames = [];
 
@@ -155,55 +153,45 @@ class ListModificationBuilder {
                 this._createAssociations(listAdapter, listAdapter.fieldAdapters.filter(f => f.fieldName === "Relationship"));                
             } else {
 
-                const { addField, updateField, renameField, removeField } =  this._diffListFields(cachedSchema, listSchema);
+                const { addField, updateField, renameField, removeField } =  this._diffListFields(cachedSchema, listSchema);                               
 
-                console.log("C", addField);
-                console.log("R", renameField);                
-                console.log("U", updateField);
-                console.log("D", removeField);                
-                
-//                const { cre }
-                
-//                console.log("#1", JSON.stringify(cachedSchema))
-//                console.log("#2", JSON.stringify(listSchema))
-                
-                // The list exists and we should compare all options, fields and associations
-
-/*
-                
-                
-                // Added fields
-                this._forEachOfFields("added", diff, (fieldSchema, fieldIndex) => {
-
-                    const fieldThatComesBefore = listSchema.fields[Number(fieldIndex) - 1];
-                
-                    if(fieldSchema.type === "Relationship") {
-                        // If the field is a Relationship we should create a Association instead                        
-                        this._createAssociations(listAdapter, [ listAdapter.fieldAdaptersByPath[fieldSchema.name] ]);                                            
-                    } else {
-                        this._createField(fieldSchema.name, listSchema.list, { after: fieldThatComesBefore && fieldThatComesBefore.name || false }, fieldSchema);
-                    }                    
-                });
-
-                // Removed fields
-                this._forEachOfFields("deleted", diff, (fieldSchema, fieldIndex) => {
-
-                    return;
+                addField.forEach((fieldSchema, fieldIndex) => {
                     
                     if(fieldSchema.type === "Relationship") {
-                        // If the field is a Relationship we should remove it instead
-
-                        console.log(fieldSchema);
-                        
-                        this._removeAssociation(listAdapter, listAdapter.fieldAdaptersByPath[fieldSchema.name]);                                            
+                        // If the field is a Relationship we should create a Association instead                        
+                        //this._createAssociations(listAdapter, [ listAdapter.fieldAdaptersByPath[fieldSchema.target.name] ]);                                            
                     } else {
-                        this._removeField(fieldSchema.name, listSchema.list, {  }, fieldSchema);
+                        this._createField(fieldSchema.target.name, listSchema.list, { }, fieldSchema.target);
                     }                    
                 });
 
-*/                
-            }            
+                updateField.forEach(fieldSchema => {
+                
+                    if(fieldSchema.type === "Relationship") {
 
+                    } else {
+                        this._updateField(fieldSchema.name, listSchema.list, { }, fieldSchema.target, fieldSchema.source);
+                    }                    
+                });
+
+                renameField.forEach(fieldSchema => {
+                
+                    if(fieldSchema.type === "Relationship") {
+
+                    } else {
+                        this._renameField(fieldSchema.name, listSchema.list, { }, fieldSchema.target, fieldSchema.source);
+                    }                    
+                });
+
+                removeField.forEach(fieldSchema => {
+                
+                    if(fieldSchema.type === "Relationship") {
+
+                    } else {
+                        this._removeField(fieldSchema.name, listSchema.list, { }, fieldSchema.source);
+                    }                    
+                });                                
+            }            
         });
         
         return {
@@ -260,7 +248,7 @@ keystone.createList('InternalSchema', {
             return;
         }
 
-        const cachedSchemaResponse = await this._knex(DEFAULT_CACHE_SCHEMA_TABLE_NAME).select("content").limit(1).orderBy("createdAt", "asc");
+        const cachedSchemaResponse = await this._knex(DEFAULT_CACHE_SCHEMA_TABLE_NAME).select("content").limit(1).orderBy("createdAt", "desc");
 
         if(cachedSchemaResponse.length === 0) {
             return;
@@ -326,6 +314,18 @@ keystone.createList('InternalSchema', {
     _createField(name, list, options, field) {
         this._modification("field", "create", name, { list, options, field });
     }
+
+    _updateField(name, list, options, field, before) {
+        this._modification("field", "update", name, { list, options, field, before });
+    }
+
+    _renameField(name, list, options, field, before) {
+        this._modification("field", "rename", name, { list, options, field, before });
+    }    
+
+    _removeField(name, list, options, field) {
+        this._modification("field", "remove", name, { list, options, field });
+    }        
     
     _createAssociations(listAdapter, fieldAdapters) {
 
@@ -380,6 +380,10 @@ class ListModificationExecution {
         for(const modification of orderedModifications) {
             await this._applyIf({ object: "list", op: "create" }, modification, () => this._createTable(modification));
             await this._applyIf({ object: "association", op: "create" }, modification, () => this._createAssociation(modification, referencedAssociationsState));
+            await this._applyIf({ object: "field", op: "create" }, modification, () => this._createField(modification));
+            await this._applyIf({ object: "field", op: "update" }, modification, () => this._updateField(modification));
+            await this._applyIf({ object: "field", op: "rename" }, modification, () => this._renameField(modification));
+            await this._applyIf({ object: "field", op: "remove" }, modification, () => this._removeField(modification));            
         };
 
         await this._saveFreshDatabaseSchema(schema);        
@@ -406,7 +410,7 @@ class ListModificationExecution {
         return modifications.sort((m1, m2) => {
 
             const objects = [ "list", "field", "association" ];
-            const ops = [ "create", "remove", "update", "rename"];
+            const ops = [ "create", "update", "rename", "remove"];
 
             if(objects.indexOf(m1.object) < objects.indexOf(m2.object)) {
                 return -1;
@@ -461,8 +465,107 @@ class ListModificationExecution {
                 this._listAdapterFieldAddToTableSchema(modification.name, field, t, modification);
             });
         });
+    }
+
+    async _createField(modification) {
+
+        console.log(`* Creating field ${modification.field.name} on table ${modification.list}`);
+
+        const tableName = modification.list;
+        
+        await this._knex.schema.alterTable(tableName, (t) => {
+            this._listAdapterFieldAddToTableSchema(modification.list, modification.field, t, modification);            
+        });
+    }
+
+    _tableInstrospectionChainables(chainables) {
+        return new Proxy({}, {
+            get: (target, prop, receiver) => {
+                return (... args) => {
+                    chainables.push({ name: prop, args: args });
+                    return this._tableInstrospectionChainables(chainables);
+                };
+            }
+        });
+    }
+    
+    _tableIntrospectionProxy(callStack) {
+        
+        return new Proxy({}, {
+            
+            get: (target, prop, receiver) => {
+
+                // Need to setup like this because some fields might be represented by two actual columns
+                return (...args) => {
+                    const fieldCallConfig = { method: prop, args: args, chainables: [] };
+
+                    callStack.push(fieldCallConfig);
+                    
+                    return this._tableInstrospectionChainables(fieldCallConfig.chainables);                                        
+                };
+            },
+            
+            apply: function(target, thisArg, argumentsList) {
+                // expected output: "Calculate sum: 1,2"
+                
+                return target(argumentsList[0], argumentsList[1]) * 10;
+            }
+        });
+    }
+    
+    async _updateField(modification) {
+
+        const tableName = modification.list;
+
+        // We need to fool keystone into supplying the table column spec into the alter table
+        // stament. The problem here is that the addToTableSchema methods wont return the knex table instance
+        // making impossible to invoke "alter" on the result
+        // Lets make a chainable Proxy so we can execute this the same way they do
+
+        const callStack = [];
+        
+        const introspect = this._tableIntrospectionProxy(callStack);
+        
+        this._listAdapterFieldAddToTableSchema(modification.list, modification.field, introspect, modification);                    
+
+        await this._knex.schema.alterTable(tableName, (t) => {
+            callStack.forEach(alterFieldCall => {
+                t = t[alterFieldCall.method](... alterFieldCall.args);
+
+                alterFieldCall.chainables.forEach(chainable => {
+                    t = t[chainable.name](... chainable.args);
+                });
+
+                t = t.alter();
+            });
+        });
+        
+        
+        console.log(`* Updating column ${modification.field.name} on table ${modification.list}`);
 
     }
+
+    async _renameField(modification) {
+
+        const tableName = modification.list;
+
+        console.log(`* Renaming column ${modification.before.name} to ${modification.field.name} on table ${modification.list}`);
+        
+        await this._knex.schema.alterTable(tableName, (t) => {
+            t.renameColumn(modification.before.name, modification.field.name);
+        });
+    }
+
+    async _removeField(modification) {
+
+        const tableName = modification.list;
+
+        console.log(`* Removing column ${modification.field.name} on table ${modification.list}`);
+        
+        await this._knex.schema.alterTable(tableName, (t) => {
+            t.dropColumn(modification.field.name);
+        });
+    }    
 
     async _createAssociation(modification, referencedAssociationsState) {
 
@@ -589,8 +692,7 @@ class ListModificationExecution {
         // I would prefer to build this listAdapter from scratch and feed the
         // options from the `modification<m>` itself but as a "compromise" feeding from
         // the list working copy is good enough for now--I might have to rebuild the
-        // field composition from scratch
-
+        // field composition from scratch        
         const fieldAdapter = this._listAdapters[listName].fieldAdaptersByPath[field.name];
         fieldAdapter.addToTableSchema(t);
     } 
