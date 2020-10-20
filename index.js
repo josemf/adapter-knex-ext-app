@@ -4,20 +4,31 @@ const { GraphQLApp } = require('@keystonejs/app-graphql');
 const { AdminUIApp } = require('@keystonejs/app-admin-ui');
 const { StaticApp } = require('@keystonejs/app-static');
 
-const Adapter = require('./adapter-knex-extended');
+const Adapter = require('keystone-adapter-knex-migrations');
 
 const PROJECT_NAME = 'my-app';
-const adapterConfig = { knexOptions: { connection: 'postgres://postgres:postgres@db/postgres' } };
+const adapterConfig = {
+    
+    knexOptions: {
+        connection: 'postgres://postgres:postgres@db/postgres'
+    },
+
+    knexMigrationsOptions: {
+        migrationsFilePath: './compiled/migrations.json',
+        migrationsSchemaFilePath: './compiled/schema.json',
+        schemaTableName: "InternalSchema"                  
+    }
+};
 
 const keystone = new Keystone({
     adapter: new Adapter(adapterConfig),
 });
 
 keystone.createList('InternalSchema', {
-    schemaDoc: 'It keeps track of list schemas mapped to database, so we know how to compare database schemas without using introspection',
+    schemaDoc: 'It keeps track all schema versions mapped to database at some point. This is used by `migrations-create` to compare against the defined list schemas.',
     fields: {
-        content: { type: Text, isRequired: true, schemaDoc: 'The schema contant as a JSON string' },
-        createdAt: { type: DateTimeUtc, isRequired: true, schemaDoc: 'The data time moment the schema have been applied to the database structure' }
+        content: { type: Text, isRequired: true, schemaDoc: 'The schema content as a JSON string' },
+        createdAt: { type: DateTimeUtc, isRequired: true, schemaDoc: 'A datetime on the moment a schema have been applied to the database' }
     }
 });
 
@@ -25,25 +36,20 @@ keystone.createList('Todo', {
     schemaDoc: 'A list of things which need to be done',
     fields: {
         name: { type: Text, schemaDoc: 'This is the thing you need to do' },
-        workflow: { type: Select, dataType: "enum", options: [ "Home", "Work", "Leasure" ] },
-        category: { type: Text },
-        createdBy: { type: Relationship, ref: 'User.todo', many: false }
+        priority: { type: Integer, isRequired: true },
+        category: { type: Relationship, ref: 'Category.todo', many: false }
     },
 });
 
-keystone.createList('User', {
-    schemaDoc: 'The user that keeps the todo in check',
+keystone.createList('Category', {
+    schemaDoc: 'The category of the Todo',
     fields: {
-        firstName: { type: Text, schemaDoc: 'The user full name' },
-        lastName: { type: Text, schemaDoc: 'The user full name' },
-        email: { type: Decimal, isRequired: true, knexOptions: { precision: 2, scale: 1}, schemaDoc: 'The user email' },        
-
-        age: { type: Integer, isRequired: true },
-        
-        todo: { type: Relationship, ref: 'Todo.createdBy', many: true }
+        name: { type: Text, schemaDoc: 'The user full name' },        
+        todo: { type: Relationship, ref: 'Todo.category', many: true }
     },
 });
 
+ 
 module.exports = {
     keystone,
     apps: [

@@ -6,8 +6,10 @@ if [ ! -f /tmp/started.lock ]; then
     echo "done" >> /tmp/started.lock
 fi
 
-cd /opt/my-app
-
+cd /opt/keystone-adapter-knex-migration
 npm link
+
+cd /opt/my-app
+npm link keystone-adapter-knex-migration
 
 nodemon --exec "npm run dev"

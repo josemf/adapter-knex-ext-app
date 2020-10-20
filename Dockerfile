@@ -4,7 +4,7 @@ ARG NODE_VERSION=12.10.0
 FROM node:${NODE_VERSION}-alpine
 
 RUN apk update && apk upgrade && \
-    apk add --no-cache git
+    apk add --no-cache git openssh
 
 RUN npm i -g nodemon
 
