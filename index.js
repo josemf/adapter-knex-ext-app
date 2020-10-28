@@ -19,10 +19,10 @@ const adapterConfig = {
         schemaTableName: "InternalSchema"                  
     }
 };
-
+ 
 const keystone = new Keystone({
-    adapter: new Adapter(adapterConfig),
-});
+    adapter: new Adapter(adapterConfig), 
+});   
 
 keystone.createList('InternalSchema', {
     schemaDoc: 'It keeps track all schema versions mapped to database at some point. This is used by `migrations-create` to compare against the defined list schemas.',
@@ -37,7 +37,9 @@ keystone.createList('Todo', {
     fields: {
         name: { type: Text, schemaDoc: 'This is the thing you need to do' },
         priority: { type: Integer, isRequired: true },
-        category: { type: Relationship, ref: 'Category.todo', many: false }
+//        category: { type: Relationship, ref: 'Category.todo', many: false },
+        //otherCategory: { type: Relationship, ref: 'Category', many: true },
+        //tags: { type: Relationship, ref: 'Tag.todos', many: true },
     },
 });
 
@@ -45,10 +47,16 @@ keystone.createList('Category', {
     schemaDoc: 'The category of the Todo',
     fields: {
         name: { type: Text, schemaDoc: 'The user full name' },        
-        todo: { type: Relationship, ref: 'Todo.category', many: true }
+//        todo: { type: Relationship, ref: 'Todo.category', many: false },
     },
 });
 
+keystone.createList('Tag', {
+    fields: {
+        name: { type: Text, isRequired: true },
+        //todos: { type: Relationship, ref: 'Todo.tags', many: true }
+    }
+});
  
 module.exports = {
     keystone,
