@@ -37,32 +37,26 @@ keystone.createList('Todo', {
     fields: {
         name: { type: Text, schemaDoc: 'This is the thing you need to do' },
         priority: { type: Integer, isRequired: true },
-//        category: { type: Relationship, ref: 'Category.todo', many: false },
-        //otherCategory: { type: Relationship, ref: 'Category', many: true },
-        //tags: { type: Relationship, ref: 'Tag.todos', many: true },
-    },
+        category: { type: Relationship, ref: 'Category.todo', many: true },
+//        parentTodo: { type: Relationship, ref: 'Todo.childTodos' },
+//        childT: { type: Relationship, ref: 'Todo.parentTodo', many: true } 
+            
+    },  
 });
 
 keystone.createList('Category', {
-    schemaDoc: 'The category of the Todo',
+    schemaDoc: 'The category of the Todo',  
     fields: {
-        name: { type: Text, schemaDoc: 'The user full name' },        
-//        todo: { type: Relationship, ref: 'Todo.category', many: false },
+        name: { type: Text, schemaDoc: 'The user full name', isUnique: false, isIndexed: false  },        
+        todo: { type: Relationship, ref: 'Todo.category', many: true },
     },
 });
-
-keystone.createList('Tag', {
-    fields: {
-        name: { type: Text, isRequired: true },
-        //todos: { type: Relationship, ref: 'Todo.tags', many: true }
-    }
-});
- 
-module.exports = {
+  
+module.exports = { 
     keystone,
     apps: [
         new GraphQLApp(),
-        new StaticApp({ path: '/', src: 'public' }),
+        new StaticApp({ path: '/', src: 'public' }), 
         new AdminUIApp({ name: PROJECT_NAME, enableDefaultRoute: true }),
     ],
 };
